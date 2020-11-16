@@ -1,0 +1,381 @@
+---
+title: "Ingresos_Apple"
+author: "Sergio Casares"
+date: "16/11/2020"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# 1. Introducción al trabajo
+
+
+Se debe elegir el modelo ETS y el modelo ARIMA que mejor predice las ventas, habiendo dejado fuera de la estimación los trimestres del 2017.
+
+Una vez seleccionado el modelo se estimara el modelo con todos los datos y se harán las predicciones del año 2017 y 2018.
+
+# 2.Importación de librerías y Dataset
+
+Importamos las librerías necesarias para la realización del trabajo.
+
+```{r}
+library(readr)
+library(forecast)
+library(xts)
+library(ggplot2)
+library(ggfortify)
+
+#Importamos los datos
+
+ventas <- read.csv("IngresosApple.csv", sep = ";")
+
+```
+
+## 2.1 Transformación del dataset
+
+Eliminamos el índice del dataset para poder facilitar la manipulación de los datos.
+
+```{r}
+ventas <- data.frame(ventas[,-1], row.names =  ventas[,1])
+
+colnames(ventas)[1] <- 'Ingresos'
+
+head(ventas)
+```
+```{r}
+rawDate <- seq(as.Date("2008/04/01"), as.Date("2017/09/30"), by = "quarter")
+
+xVentas <- xts(ventas$Ingresos, order.by = rawDate)
+xVentas <- to.quarterly(xVentas)
+
+zVentas <- as.zoo(xVentas$xVentas.Open)
+names(zVentas) = "Ingresos"
+
+zlVentas = log(zVentas)
+
+df_new <- data.frame(value = as.vector(zVentas),
+                     time = time(zVentas))
+
+```
+
+
+## 2.2 Análisis Exploratorio de Datos (EDA)
+
+En este apartado, realizaremos una visualización de los ingresos de Apple de manera general y posteriormente lo diferenciaremos por trimestres.
+
+
+```{r}
+
+#Visualizamos los datos de manera general
+
+zventas <- as.zoo(xVentas$xVentas.Open)
+names(zVentas) = "Ingresos"
+
+
+autoplot(zventas)+ggtitle('Ingresos Trimestrales Apple')+
+  xlab('Trimestres')+ylab('Ingresos')
+
+
+zlventas = log(zventas)
+
+autoplot(zlventas)+ggtitle('Ingresos Trimestrales LOG Apple')+
+  xlab('Trimestres')+ylab('Ingresos')
+
+#Dividimos los datos por trimestres
+
+tsventas <- ts(coredata(ventas), start = c(2008,2), frequency = 4)
+
+ggfreqplot(tsventas, freq = 4, nrow = 1, facet.labeller = c('T1','T2','T3','T4')) +
+  ggtitle('Ingresos Trimestrales')
+
+```
+
+
+
+En la primera gráfica se puede observar una tendencia alcista de las ventas, lo que nos indica que tanto la media como la varianza no son estacionarias, este tipo de series se caracterizan por:
+
+* Pueden mostrar cambios de varianza.
+
+* Pueden mostrar una tendencia, es decir que la media crece o baja a lo largo del tiempo.
+
+* Además, se puede observar que el comportamiento de la serie es parecido en ciertos tiempos periódicos en el tiempo.
+
+En la segunda gráfica se puede observar una clara similitud de los primeros, segundos y terceros trimestres durante todos los años, en cambio, el cuarto trimestre se diferencia de los demás por una clara y mayor tendencia alcista de las ventas. Todo esto nos puede indicar cierta estacionalidad de los datos.
+
+
+# 3. Predicción
+
+Para poder predecir, debemos dividir la muestra en training y test tanto de la muestra con los ingresos de manera logarítmica como sin ella.
+
+Con la distribución y representación actual de los datos, se puede observar que la serie temporal es el tipo Aditive Damped, Multiplicative.
+
+```{r}
+cOmit = 3
+
+nObs = length(zventas)
+nObs_log =length(zlventas)
+#sub sample
+oVentas = window(zventas, start = index(zventas[1]), end = index(zventas[nObs - cOmit]))
+
+#sub sample log
+olVentas = window(zlventas, start = index(zlventas[1]), end = index(zlventas[nObs_log - cOmit]))
+```
+
+## 3.1. Seasonal, trend & remainder
+
+Antes de comenzar con la predicción, realizamos un análisis de la estacionalidad, la tendencia y el remainder.
+
+* Data: se observa la tendencia alcista
+
+* Seasonal: se puede observar una clara estacionalidad de los datos
+
+* Tendencia: se observa, al igual que data, una clara tendencia alcista
+
+* Remainder: es el residuo de la estacionalidad (seasonal) más el ajuste de la tendencia (trend), no se observan valores anormales.
+
+```{r}
+stl(xVentas[, 1], s.window = "periodic")
+
+plot(stl(xVentas[, 1], s.window = "periodic"))
+```
+
+## 3.3. Modelo ETS
+
+Utilizando la función ETS podemos seleccionar el modelo más adecuado para nuestra serie temporal.
+
+La función de ETS nos indica que la serie temporal es 'Multiplicative Holt-Winters’ method with multiplicative errors, este modelo calcula valores expoencialmente suavizados para los distintos niveles, tendencia y ajustes estacionales de la predicción. Este método multiplica las tendencias predecidas por la estacionalidad.
+
+Este método es el más adecuado para datos con tendencia y estacionalidad que incrementa a lo largo del tiempo. Esto resulta en una curva que reproduce los cambios en los datos.
+
+
+## 3.3.A Seleccionar ETS automático (no logarítmica)
+
+
+```{r}
+#select automatic ETS
+
+## Select automatic ETS
+etsfit <- ets(oVentas)
+etsfit
+#forecast model
+fventas.ets = forecast(etsfit)
+#Results
+summary(fventas.ets)
+
+#Plot
+plot(fventas.ets)
+lines(window(tsventas),type = "o")
+
+```
+
+
+#### Predicción y Accuracy 
+
+
+Realizamos el cálculo de la diferencia entre los valores predecidos y los reales.
+
+Uno de los estimadores que más indican la precisión del modelo es el Error Medio, que en este caso es de 1631,71, que para valores de entre 45000 y 80000 millones, representa una diferencia de entre el 2% y el 5% de error, por lo que la predicción de nuestro modelo se ajusta bien a la realidad.
+
+```{r}
+matrix(c(fventas.ets$mean[1:cOmit],zventas[(nObs-cOmit+1):nObs]),ncol=2)
+
+etsfit<-ets(window(tsventas,end=2016+3/4))
+
+fventas.ets=forecast(etsfit,h=cOmit)
+
+
+forecast:::testaccuracy(fventas.ets$mean,window(tsventas,start=2008),test = NULL, d = NULL, D = NULL)
+```
+
+## 3.3.B. Seleccionar ETS automático (logarítmica)
+
+```{r}
+# Selección automática ETS
+etsfit_log <- ets(olVentas)
+
+# Forecast model
+fventas.ets_log = forecast(etsfit_log)
+
+#Resultado
+summary(fventas.ets_log)
+```
+```{r}
+plot(fventas.ets_log)
+lines(window(zlVentas), type = "o")
+```
+
+
+#### Predicción y Accuracy - ETS
+
+```{r}
+matrix(c(fventas.ets_log$mean[1:cOmit], zlVentas[(nObs_log - cOmit + 1):nObs_log]), ncol = 2)
+
+# Predicciones y Precisión
+
+tsVentas_log <- log(tsventas)
+
+etsfit_log <- ets(window(tsVentas_log, end = 2016 + 3/4))
+fventas.ets_log = forecast(etsfit_log , h = cOmit)
+
+forecast::accuracy(fventas.ets_log$mean, window(tsVentas_log, start = 2017), test = NULL, d = NULL, D = NULL)
+
+```
+
+
+
+## 3.4. Modelo ARIMA
+
+Es un modelo estadístico que utiliza variaciones y regresiones de datos estadísticos con el fin de encontrar patrones para una predicción hacia el futuro. Se trata de un modelo dinámico de series temporales, es decir, las estimaciones futuras vienen explicadas por los datos del pasado y no por variables independientes.
+
+
+#### Transformación de los datos
+
+Creamos dos dataframes, uno con los ingresos con los valores normales y otro dataframe con los logaritmos de los valores para evitar la estacionalidad de la varianza, lo cuál nos ayuda a poder predecir mejor.
+
+```{r}
+
+zlVentas=log(zventas)
+
+df_new <- data.frame(value = as.vector(zventas),
+                     time = time(zventas))
+
+ggplot(df_new)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Ventas Trimestrales Apple")+xlab("Trimestres")
+
+df_newl <- data.frame(value = as.vector(zlVentas),
+                      time = time(zlVentas))
+
+ggplot(df_newl)+geom_point(aes(x=time,y=value))+geom_line(aes(x=time,y=value))+ylab("Ventas")+ggtitle("Ventas Trimestrales LOG Apple")+xlab("Trimestres")
+
+
+```
+
+## 3.4.A Seleccionar ARIMA automático (no logarítmica)
+
+```{r}
+fit1=auto.arima(oVentas,lambda=0)
+summary(fit1)
+
+```
+
+```{r}
+fit_arima = auto.arima(oVentas, lambda = 0)
+
+fventas.arima = forecast(fit_arima)
+
+ggplot(df_new) +
+  geom_point(aes(x = time, y = value)) +
+  geom_line(aes(x = time, y = value)) +
+  geom_forecast(fventas.arima, alpha = 0.4) +
+  ggtitle("ARIMA: Predicción Apple")
+```
+
+
+#### Predicciones y Accuracy ARIMA
+
+```{r}
+matrix(c(fventas.arima$mean[1:cOmit], zVentas[(nObs - cOmit + 1):nObs]), ncol = 2)
+
+arimafit <- ets(window(tsventas, end = 2016 + 3/4))
+fventas.arima = forecast(arimafit , h = cOmit)
+
+forecast::accuracy(fventas.arima$mean, window(tsventas, start = 2017), test = NULL, d = NULL, D = NULL)
+```
+
+#### Análisis de residuos
+
+.
+
+```{r}
+
+ggtsdisplay(fit_arima$residuals)
+
+```
+
+
+
+## 3.4.B Seleccionar ARIMA automático (logarítmica)
+
+```{r}
+
+fit_arima_log = auto.arima(olVentas, lambda = 0)
+fventas.arima_log = forecast(fit_arima_log)
+
+
+ggplot(df_newl) +
+  geom_point(aes(x = time, y = value)) +
+  geom_line(aes(x = time, y = value)) +
+  geom_forecast(fventas.arima_log, alpha = 0.4) +
+  ggtitle("ARIMA: Predicción Apple log")
+
+```
+
+#### Predicciones y Accuracy ARIMA
+
+```{r}
+matrix(c(fventas.arima_log$mean[1:cOmit], zlVentas[(nObs_log - cOmit + 1):nObs_log]), ncol = 2)
+
+
+arimafit_log <- ets(window(tsVentas_log, end = 2016 + 3/4))
+fventas.arima_log = forecast(arimafit_log , h = cOmit)
+
+forecast::accuracy(fventas.arima_log$mean, window(tsVentas_log, start = 2017), test = NULL, d = NULL, D = NULL)
+
+```
+
+
+#### Análisis de residuos
+
+.
+
+```{r}
+
+ggtsdisplay(fit_arima_log$residuals)
+
+```
+
+
+# 4. Conclusiones
+
+A la hora de examinar las conclusiones, si analizamos los resultados de manera gráfica, se puede observar sin duda alguna que el modelo ETS ha sido capaz de predecir mejor los flujos futuros de ingresos, en cambio, el modelo ARIMA (tanto tomando valores logaritmicos como sin ellos) presenta una predicción, que aún siendo capaz de analizar la tendencia de los ingresos, no llega a ajustarse tanto como el modelo ETS.
+
+
+Por otra parte, hemos podido observar, tanto en el modelo ETS como en el ARIMA, que realizar el logaritmo de los ingresos con el fin de evitar la estacionalidad de la varianza ha conseguido ajustar aún más los modelos haciendolos más precisos.
+
+Por lo tanto, podemos asumir, que tanto el mejor modelo ETS como ARIMA, son los logarítmicos.
+
+
+# 5. Bibliografía
+
+Apuntes proporcionados por el profesor
+
+
+ETS Models: 
+
+* https://robjhyndman.com/talks/RevolutionR/6-ETS.pdf
+
+* https://otexts.com/fpp2/ets-forecasting.html
+
+
+ARIMA Models:
+
+* http://www.fuenterrebollo.com/Master-Econometria/ECONOMETRIA/SERIES-TEMPORALES/modelo-arima.pdf
+
+* https://es.wikipedia.org/wiki/Modelo_autorregresivo_integrado_de_media_m%C3%B3vil
+
+
+
+
+
+
+
