@@ -1,0 +1,393 @@
+---
+title: "BMW vs Volkswagen"
+author: "Sergio Casares"
+date: "27/11/2020"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    df_print: paged
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(out.width = '75%', out.height='75%', fig.align = "center") 
+```
+
+
+\newpage
+
+# 1. Importamos librerías
+
+Importamos las librerías necesarias para nuestro trabajo
+
+```{r}
+library(quantmod) 
+library(forecast)
+library(fGarch)
+
+library(forecast)
+library(xts)
+library(ggplot2)
+library(ggfortify)
+library(corrplot)
+library(zoo)
+library(TSA)
+
+library(vars)
+```
+
+# 2. Introducción al Trabajo
+
+Utilizando datos diarios de los dos series desde el año 2014, debemos analizar la relación entre BMW y Volkswagen, contestando a las siguiente preguntas:
+
+* ¿Estimar el modelo garch de BMW?
+
+* Plantear un modelo VAR mensual entre los dos activos.
+
+
+```{r}
+getSymbols('BMW.DE', from='2014-01-02', to='2020-11-24')
+getSymbols('VOW3.DE', from='2014-01-02', to='2020-11-24')
+
+BMW <- BMW.DE[,4]
+VOW <- VOW3.DE[,4]
+
+BMW <- na.omit(BMW)
+VOW <- na.omit(VOW)
+
+#View(BMW.DE)
+#View(VOW)
+
+data_union <- cbind(BMW, VOW)
+```
+
+Evolución del precio de cierre en bolsa de ambas empresas.
+
+```{r}
+
+autoplot(data_union)
+
+```
+
+\newpage
+
+# 3. Modelo Garch (para BMW)
+
+El modelo GARCH es un modelo autorregresivo generalizado que captura las agrupaciones de volatilidad de las rentabilidades a través de la varianza condicional. 
+
+El modelo GARCH encuentra la volatilidad promedio a medio plazo mediante una autorregresión que depende de la suma de perturbaciones rezagadas y de la suma de varianzas rezagadas. 
+
+* Generalizado porque tiene en cuenta tanto las observaciones recientes como las históricas. 
+
+* Autorregresivo porque la variable dependiente se regresa en sí misma. 
+
+* Condicional porque la varianza futura depende de la varianza histórica. 
+
+* Heterocedástico porque la varianza varía en función de las observaciones. 
+
+
+## 3.1. Creación de la función
+
+```{r}
+
+#funciones
+archTest <- function(rtn,m=10){
+  # Perform Lagrange Multiplier Test for ARCH effect of a time series
+  # rtn: time series
+  # m: selected AR order
+  # TSAY(2013)
+  y=(rtn-mean(rtn))^2
+  T=length(rtn)
+  atsq=y[(m+1):T]
+  x=matrix(0,(T-m),m)
+  for (i in 1:m){
+    x[,i]=y[(m+1-i):(T-i)]
+  }
+  md=lm(atsq~x)
+  summary(md)
+}
+
+```
+
+## 3.2. Cálculo Retorno Diario y Volatilidad (más T-Test)
+
+Se realiza el cálculo del retorno diario (con la función dailyReturn) y la volatilidad diaria (la cual es el rendimiento diario al cuadrado).
+
+```{r}
+#Calculate Daily Arithmetic Return
+dRentCont=dailyReturn(BMW,type='log',leading=FALSE)
+#Exclude NA (First data)
+dRentCont=na.exclude(dRentCont)
+
+#Volatilidad GARCH
+#Plot return squared
+plot.zoo(cbind(BMW,dRentCont,dRentCont^2),main=paste("Precio,   Rentabilidad y Volatilidad"),xlab="años",ylab=c("Precio","rentabilidad","Volatilidad"))
+```
+
+El T Test contrasta medias independientes:
+
+Hipótesis nula (H0): considera que no hay diferencia o cambio. En el caso de comparar dos medias independientes la hipótesis nula considera que media1 = media2.
+
+Hipótesis alternativa (HA): considera que el valor real de la media poblacional es mayor, menor o distinto del valor que establece la Ho. En el caso de comparar dos medias independientes la hipótesis alternativa considera que media1 != media2.
+
+Si el p-value es menor que el valor de alpha seleccionado, existen evidencias suficientes para rechazar H0 en favor de HA
+
+```{r}
+#testing mean
+t.test(dRentCont)
+```
+
+Al ser el p-value de 0.86, se acepta Ho y afirmamos que es un modelo NO GARCH.
+
+
+## 3.3. ACF Y PACF (más Ljung-Box Test y LM test) 
+
+### ACF Y PACF 
+
+En la siguiente gráfica se puede observar como en la parte regular la correlación y el precio de hoy puede ser explicar por lo que ha ocurrido 30 días antes.
+
+En la parte estacional, el valor disminuye hasta los 5-7 periodos anteriores.
+
+```{r}
+#ACF & PACF 
+# VolProxy=abs(dRentCont) # absolute value
+VolProxy=dRentCont^2 #squared
+
+
+#ACF y PACF
+tsdisplay(VolProxy) 
+
+```
+
+La prueba de Ljung-Box se puede definir de la siguiente manera.
+
+H0: Los datos se distribuyen de forma independiente (es decir, las correlaciones en la población de la que se toma la muestra son 0, de modo que cualquier correlación observada en los datos es el resultado de la aleatoriedad del proceso de muestreo).
+Ha: Los datos no se distribuyen de forma independiente.
+
+Lagrange Multiplier test:
+
+The Lagrange Multiplier test proposed by Engle (1982) fits a linear regression model for the squared residuals and examines whether the fitted model is significant. 
+
+So the null hypothesis is that the squared residuals are a sequence of white noise, namely, the residuals are homoscedastic.
+
+### Ljung-Box Test
+
+```{r}
+#Ljung-Box Test 
+Box.test(VolProxy,lag=10,  type="Lj")
+Box.test(VolProxy,lag=20,  type="Lj")
+Box.test(VolProxy,lag=40,  type="Lj")
+
+
+```
+
+En el test de Box Lung, rechazamos la hipótesis Nulo y afirmamos que los datos no se distribuyen de manera independiente.
+
+### Lagrange Multiplier test:
+
+The Lagrange Multiplier test proposed by Engle (1982) fits a linear regression model for the squared residuals and examines whether the fitted model is significant. 
+
+So the null hypothesis is that the squared residuals are a sequence of white noise, namely, the residuals are homoscedastic.
+
+
+```{r}
+#LM test
+archTest(dRentCont,20)
+```
+
+En el test de Lagrange Multiplier se rechaza H0, entonces, podemos afirmar qu elos residuos son heterocedásticos.
+
+
+## 3.4. Modelo GARCH básico
+
+
+Vamos a analizar las pertubaciones y varianzas retardadas.
+
+Creamos el modelo con p=1 y q=0
+
+```{r}
+#GARCH(1)
+m1=garchFit(~1+garch(1,0),data=dRentCont,trace=F) # Fit an ARCH(1) model
+summary(m1)
+resi=residuals(m1,standardize=T) #residuals
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals
+
+```
+
+De los análisis de contraste, obtenemos en todos que se debe rechazar H0, entonces podemos afirmar que NO nos encontramos ante un modelo Garch. Se puede observar también que las volatilidades no son ruido blanco.
+
+## 3.5. Averiguar orden correcto del modelo GARCH
+
+Como el modelo Garch (0,1) ha salido que no lo es un modelo Garch (según los estadisticos), debemos averiguar cual es el verdadero orden del modelo por medio de un autoarima y agregarlo a nuestro modelo Garch
+
+
+
+```{r}
+(fit_BMW <- auto.arima(dRentCont, seasonal = TRUE))
+```
+
+### Arma(3,1) y garch(1,0)
+
+Con el autoarima obtenemos que nuestro modelo debe ser de orden (3,0,1), entonces añadiremos el modelo arma (3,0,1) a nuestro Garch (1,0).
+
+```{r}
+#ARCH(1)
+m1=garchFit(~1+ arma(3,1) + garch(1,0),data=dRentCont,trace=F) # Fit an ARCH(1) model
+
+#summary del modelo ARCH(1)
+summary(m1) #observamos que no se cumple que sean ruido blanco todavia
+
+resi=residuals(m1,standardize=T) #residuals
+resi=xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals
+```
+
+Analizando los estadisticos obtenemos que nuestro modelo no presenta las caracteríticas de un modelo Garch, por lo que debemos de bucar el orden correcto.
+
+### Arma(3,1) y garch(1,1)
+
+Probamos ahora con el arma(3,1) y garch(1,1)
+
+```{r}
+#GARCH(1,1)
+m2=garchFit(~1+arma(3,1) + garch(1,1),data=dRentCont,trace=F) # Fit an GARCH(1,1) model
+
+summary(m2) #observamos aqui por los test de boxljung que para diferentes periodos el modelo tiene varianza ruido blanco por el valor del p value
+#a su vez se ve en los test de shapiro que no se comporta como normal y que en jarque bera que tiene un p value = 0 
+
+resi = residuals(m2,standardize=T) #residuals
+resi = xts(resi,order.by=index(dRentCont)) #residuals as xts
+tsdisplay(resi^2) #acf pacf residuals. Observamos lo que habiamos visto antes, es decir, que se convierten en ruido blanco
+
+#plot(m2)
+```
+
+
+Observamos aqui por los test de box-Ljung que para diferentes periodos el modelo tiene varianza ruido blanco por el valor del p value. Esto mismo lo confirmamos en el grafico de los residuos al cuadrado.
+
+
+
+Predicción del arma(3,1) y garch(1,1)
+
+```{r}
+
+#Error in a_vec[(i - 1):(i - u2)] : solamente 0's pueden ser mezclados con subscritos negativos
+#predict(m2) #forecast volatility
+
+#predict(m2, n.ahead = 10, plot=TRUE, crit_val=2) #plot with 2*standard error
+#predict(m2,n.ahead=20,plot=TRUE,conf=.9,nx=100) # plot 100 data with 90% confidence
+
+```
+
+
+
+\newpage
+
+# 4. Modelo VAR mensual entre los dos activos.
+
+Los modelos VAR (o modelos autorregresivos vectoriales) se utilizan para modelizar series temporales en contextos multivariantes donde hay dependencias dinámicas entre distintas series. 
+
+Los modelos VAR se utilizan cuando las series temporales a modelizar son estacionarias
+
+Los modelos VAR constituyen una extensión directa de los modelos autorregresivos univariantes cuando tenemos más de una serie temporal y se quiere captar las dependencias dinámicas que puede haber entre estas series.
+
+## 4.1. Cálculo de rendimientos mensuales 
+
+Se calculan los rendimientos mensuales para su posterior uso en el modelo VAR.
+
+```{r}
+rbmw=monthlyReturn(BMW)
+rvow=monthlyReturn(VOW)
+
+#generar vector
+vY=cbind(rbmw,rvow)
+colnames(vY)=c("BMW","VOW")
+vY=na.omit(vY)
+
+```
+
+## 4.2. Selección modelo VAR y estimación 
+
+Con la función VARselect(vY) 
+
+What the $selection object is telling you is the total lag order selected by minimizing each of the 4 criteria (Akaike, Hannan-Quinn, Schwarz, and Final Prediction Error).
+
+En este caso, nos dice que el orden del lag es de 1 para los cuatro.
+
+What the criteria object tells you is the value of each criteria at the given lag. This may be useful if there are a lot of lags that have similar criterion values, allowing you to choose a more parsimonious specification if the minimizer has p very high, but a much lower value of p gives you a similar criterion.
+
+```{r}
+#Seleccionar modelo
+VARselect(vY)
+
+#estimar
+model.var=VAR(vY)
+summary(model.var)
+model.var1=VAR(vY,type="none")
+summary(model.var1)
+
+```
+
+## 4.3. Causalidad de Granger y respuesta al impulso
+
+Es un test consistente en comprobar si los resultados de una variable sirven para predecir a otra variable, si tiene carácter unidireccional o bidireccional. Para ello se tiene que comparar y deducir si el comportamiento actual y el pasado de una serie temporal A predice la conducta de una serie temporal B. Si ocurre el hecho, se dice que “el resultado A” causa en el sentido de Wiener-Granger “el resultado B”; el comportamiento es unidireccional. Si sucede lo explicado e igualmente “el resultado B” predice “el resultado A”, el comportamiento es bidireccional, entonces “el resultado A” causa “el resultado B”, y “el resultado B” causa “el resultado A”.
+
+Con unos valores cercanos a 0 del p-valor (se rechaza H0) y se puede afirmar que existe causalidad instantánea entre ambos activos como se puede observar en las siguientes ilustraciones.
+
+```{r}
+#causalidad de granger
+causality(model.var1)
+#respuesta al impulso
+model.ri=irf(model.var1)
+model.ri
+plot(model.ri)
+```
+## 4.4. Se realiza la predición de los valores de BMW Y Volks 
+
+```{r}
+
+##prediccion
+predict(model.var1, n.ahead = 8, ci = 0.95)
+
+```
+
+
+
+
+\newpage
+
+# 5. Bibliografía
+
+Modelo GARCH:
+
+* https://economipedia.com/definiciones/modelo-garch.html
+
+Modelo VAR:
+
+* https://guiasjuridicas.wolterskluwer.es/Content/Documento.aspx?params=H4sIAAAAAAAEAMtMSbF1jTAAASMTczNLtbLUouLM_DxbIwMDS0NDQ3OQQGZapUt-ckhlQaptWmJOcSoAFtLjADUAAAA=WKE
+
+
+T - Test: 
+
+* https://www.cienciadedatos.net/documentos/12_t-test
+
+
+Causalidad de Granger:
+
+* https://es.wikipedia.org/wiki/Causalidad_de_Granger
+
+
+VarSelect:
+
+* https://stackoverflow.com/questions/14131676/selecting-an-appropriate-lag-for-a-regression-equation-and-how-to-interpret-the
+
+
+
+
+
+
+
